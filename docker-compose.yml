@@ -1,0 +1,12 @@
+# Runs the API in Docker. The database is MongoDB Atlas (cloud), so there is no database container.
+services:
+  api:
+    build: ./backend
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      MONGODB_URI: ${MONGODB_URI}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      FRONTEND_URL: http://localhost:5173
+    ports: ["4000:4000"]
