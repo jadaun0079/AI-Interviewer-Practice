@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # AI Interviewer Practice (MongoDB Atlas edition)
 
 Students sign up, upload their resume as a **PDF**, and take a **voice interview**. The AI reads the resume, asks questions out loud, listens to the spoken answers (speech is converted to text in the browser), rates every answer from 1 to 10 and finishes with a report and a 7-day study plan.
@@ -91,3 +92,6 @@ Email verification and password reset, Google login, admin panel, payments, back
 
 ## License
 MIT
+=======
+# AI-Interviewer-Practice
+>>>>>>> 4f745b6cb0cd020560d49840901d84a7f9bf4ad8
