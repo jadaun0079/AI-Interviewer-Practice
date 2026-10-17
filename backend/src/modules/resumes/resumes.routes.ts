@@ -3,6 +3,7 @@ import multer from 'multer';
 import { z } from 'zod';
 import { AppError } from '../../lib/errors';
 import { idParam } from '../../lib/ids';
+import { logger } from '../../lib/logger';
 import { extractPdfText } from '../../lib/pdf';
 import { noContent, ok, wrap } from '../../lib/http';
 import { authenticate } from '../../middleware/auth';
@@ -44,14 +45,15 @@ router.post(
   upload.single('file'),
   wrap(async (req, res) => {
     if (!req.file) throw new AppError(422, 'VALIDATION_ERROR', 'Attach a PDF file in the "file" field.');
-    if (req.file.buffer.subarray(0, 5).toString() !== '%PDF-') {
+    if (!req.file.buffer.subarray(0, 1024).toString('latin1').includes('%PDF-')) {
       throw new AppError(415, 'UNSUPPORTED_MEDIA_TYPE', 'This file is not a valid PDF.');
     }
     await assertCapacity(req.user!.id);
     let text = '';
     try {
       text = normalize(await extractPdfText(req.file.buffer));
-    } catch {
+    } catch (err: any) {
+      logger.error({ err }, 'Failed to extract PDF text');
       throw new AppError(422, 'RESUME_UNREADABLE', 'This PDF could not be read. Try another file or paste the text.');
     }
     ok(res, await save(req.user!.id, req.file.originalname, text), 201);
