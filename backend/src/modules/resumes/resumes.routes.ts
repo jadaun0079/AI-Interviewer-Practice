@@ -1,6 +1,8 @@
+
 import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
+
 import { AppError } from '../../lib/errors';
 import { idParam } from '../../lib/ids';
 import { logger } from '../../lib/logger';
@@ -11,93 +13,273 @@ import { validate } from '../../middleware/validate';
 import { Resume } from '../../models';
 
 const MAX_RESUMES = 10;
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const MIN_RESUME_TEXT_LENGTH = 80;
+const MAX_RESUME_TEXT_LENGTH = 15000;
+
 const router = Router();
+
 router.use(authenticate);
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
-  fileFilter: (_req, file, cb) =>
-    file.mimetype === 'application/pdf'
-      ? cb(null, true)
-      : cb(new AppError(415, 'UNSUPPORTED_MEDIA_TYPE', 'Only PDF files are accepted.')),
+  limits: {
+    fileSize: MAX_FILE_SIZE,
+    files: 1,
+  },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype !== 'application/pdf') {
+      return cb(
+        new AppError(
+          415,
+          'UNSUPPORTED_MEDIA_TYPE',
+          'Only PDF files are accepted.',
+        ),
+      );
+    }
+
+    cb(null, true);
+  },
 });
 
-const normalize = (t: string) =>
-  t.replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim().slice(0, 15000);
+const normalize = (text: string) =>
+  text
+    .replace(/\r/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, MAX_RESUME_TEXT_LENGTH);
 
-async function assertCapacity(userId: string) {
-  if ((await Resume.countDocuments({ userId })) >= MAX_RESUMES) {
-    throw new AppError(402, 'PLAN_LIMIT_REACHED', `You can store up to ${MAX_RESUMES} resumes. Delete one first.`);
+async function assertCapacity(userId: string): Promise<void> {
+  const count = await Resume.countDocuments({ userId });
+
+  if (count >= MAX_RESUMES) {
+    throw new AppError(
+      402,
+      'PLAN_LIMIT_REACHED',
+      `You can store up to ${MAX_RESUMES} resumes. Delete one first.`,
+    );
   }
 }
 
-async function save(userId: string, fileName: string, text: string) {
-  if (text.length < 80) {
-    throw new AppError(422, 'RESUME_UNREADABLE', 'Could not read enough text. If your PDF is a scan, paste the text instead.');
+async function save(
+  userId: string,
+  fileName: string,
+  text: string,
+) {
+  const normalizedText = normalize(text);
+
+  if (normalizedText.length < MIN_RESUME_TEXT_LENGTH) {
+    throw new AppError(
+      422,
+      'RESUME_UNREADABLE',
+      'Not enough text could be extracted. If your PDF is scanned, paste the resume text instead.',
+    );
   }
-  const r = await Resume.create({ userId, fileName: fileName.slice(0, 200), text, characters: text.length });
-  return { id: String(r._id), fileName: r.fileName, characters: r.characters, preview: text.slice(0, 300), createdAt: r.createdAt };
+
+  const resume = await Resume.create({
+    userId,
+    fileName: fileName.slice(0, 200),
+    text: normalizedText,
+    characters: normalizedText.length,
+  });
+
+  return {
+    id: String(resume._id),
+    fileName: resume.fileName,
+    characters: normalizedText.length,
+    preview: normalizedText.slice(0, 300),
+    createdAt: resume.createdAt,
+  };
 }
+
+/* ---------- Upload PDF ---------- */
 
 router.post(
   '/',
   upload.single('file'),
   wrap(async (req, res) => {
-    if (!req.file) throw new AppError(422, 'VALIDATION_ERROR', 'Attach a PDF file in the "file" field.');
-    if (!req.file.buffer.subarray(0, 1024).toString('latin1').includes('%PDF-')) {
-      throw new AppError(415, 'UNSUPPORTED_MEDIA_TYPE', 'This file is not a valid PDF.');
+    const file = req.file;
+
+    if (!file) {
+      throw new AppError(
+        422,
+        'VALIDATION_ERROR',
+        'Attach a PDF file in the "file" field.',
+      );
     }
+
+    // Basic PDF signature check.
+    if (
+      !file.buffer
+        .subarray(0, 1024)
+        .toString('latin1')
+        .includes('%PDF-')
+    ) {
+      throw new AppError(
+        415,
+        'UNSUPPORTED_MEDIA_TYPE',
+        'This file does not appear to be a valid PDF.',
+      );
+    }
+
     await assertCapacity(req.user!.id);
-    let text = '';
+
+    let extractedText: string;
+
     try {
-      text = normalize(await extractPdfText(req.file.buffer));
-    } catch (err: any) {
-      logger.error({ err }, 'Failed to extract PDF text');
-      throw new AppError(422, 'RESUME_UNREADABLE', 'This PDF could not be read. Try another file or paste the text.');
+      extractedText = await extractPdfText(file.buffer);
+    } catch (err: unknown) {
+      logger.error(
+        {
+          fileName: file.originalname,
+          bytes: file.size,
+          mimeType: file.mimetype,
+          error:
+            err instanceof Error
+              ? {
+                  name: err.name,
+                  message: err.message,
+                  stack: err.stack,
+                }
+              : String(err),
+        },
+        'Failed to extract PDF text',
+      );
+
+      throw new AppError(
+        422,
+        'RESUME_UNREADABLE',
+        'This PDF could not be read. Try another file or paste the text.',
+      );
     }
-    ok(res, await save(req.user!.id, req.file.originalname, text), 201);
+
+    const normalizedText = normalize(extractedText);
+
+    logger.info(
+      {
+        fileName: file.originalname,
+        bytes: file.size,
+        extractedCharacters: normalizedText.length,
+      },
+      'Resume PDF processed',
+    );
+
+    const result = await save(
+      req.user!.id,
+      file.originalname,
+      normalizedText,
+    );
+
+    ok(res, result, 201);
   }),
 );
 
+/* ---------- Save pasted resume text ---------- */
+
 const textSchema = z
-  .object({ fileName: z.string().trim().max(120).default('Pasted resume'), text: z.string().min(80).max(30000) })
+  .object({
+    fileName: z
+      .string()
+      .trim()
+      .max(120)
+      .default('Pasted resume'),
+    text: z
+      .string()
+      .min(MIN_RESUME_TEXT_LENGTH)
+      .max(30000),
+  })
   .strict();
 
 router.post(
   '/text',
   validate(textSchema),
   wrap(async (req, res) => {
-    const b = req.body as z.infer<typeof textSchema>;
+    const body = req.body as z.infer<typeof textSchema>;
+
     await assertCapacity(req.user!.id);
-    ok(res, await save(req.user!.id, b.fileName, normalize(b.text)), 201);
+
+    const result = await save(
+      req.user!.id,
+      body.fileName,
+      body.text,
+    );
+
+    ok(res, result, 201);
   }),
 );
+
+/* ---------- List resumes ---------- */
 
 router.get(
   '/',
   wrap(async (req, res) => {
-    const rows = await Resume.find({ userId: req.user!.id }).select('fileName characters createdAt').sort({ createdAt: -1 }).lean();
-    ok(res, rows.map((r) => ({ id: String(r._id), fileName: r.fileName, characters: r.characters, createdAt: r.createdAt })));
+    const rows = await Resume.find({
+      userId: req.user!.id,
+    })
+      .select('fileName characters createdAt')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    ok(
+      res,
+      rows.map((resume) => ({
+        id: String(resume._id),
+        fileName: resume.fileName,
+        characters: resume.characters,
+        createdAt: resume.createdAt,
+      })),
+    );
   }),
 );
+
+/* ---------- Get one resume ---------- */
 
 router.get(
   '/:id',
   validate(idParam, 'params'),
   wrap(async (req, res) => {
-    const r = await Resume.findOne({ _id: req.params.id, userId: req.user!.id }).lean();
-    if (!r) throw new AppError(404, 'NOT_FOUND', 'Resume not found.');
-    ok(res, { id: String(r._id), fileName: r.fileName, text: r.text, createdAt: r.createdAt });
+    const resume = await Resume.findOne({
+      _id: req.params.id,
+      userId: req.user!.id,
+    }).lean();
+
+    if (!resume) {
+      throw new AppError(
+        404,
+        'NOT_FOUND',
+        'Resume not found.',
+      );
+    }
+
+    ok(res, {
+      id: String(resume._id),
+      fileName: resume.fileName,
+      text: resume.text,
+      createdAt: resume.createdAt,
+    });
   }),
 );
+
+/* ---------- Delete resume ---------- */
 
 router.delete(
   '/:id',
   validate(idParam, 'params'),
   wrap(async (req, res) => {
-    const r = await Resume.deleteOne({ _id: req.params.id, userId: req.user!.id });
-    if (!r.deletedCount) throw new AppError(404, 'NOT_FOUND', 'Resume not found.');
+    const result = await Resume.deleteOne({
+      _id: req.params.id,
+      userId: req.user!.id,
+    });
+
+    if (!result.deletedCount) {
+      throw new AppError(
+        404,
+        'NOT_FOUND',
+        'Resume not found.',
+      );
+    }
+
     noContent(res);
   }),
 );
