@@ -14,7 +14,12 @@ export const setToken = (t: string | null) => {
   accessToken = t;
 };
 
-const API_BASE = ((import.meta as any).env?.VITE_API_URL as string | undefined)?.replace(/\/+$/, '') || '';
+// const API_BASE = (
+//   import.meta.env.VITE_API_URL as string | undefined
+// )?.replace(/\/+$/, '') || '';
+ const API_BASE = import.meta.env.VITE_API_URL
+  ? `${import.meta.env.VITE_API_URL.replace(/\/+$/, '')}/api`
+  : '/api'; 
 
 let refreshing: Promise<boolean> | null = null;
 function refresh(): Promise<boolean> {
