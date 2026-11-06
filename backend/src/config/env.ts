@@ -33,9 +33,16 @@ const schema = z.object({
     .min(32, 'must be at least 32 characters (run: npm run setup)'),
 
   
-  // Gemini API configuration
-  GEMINI_API_KEY: z.string().min(1, 'is required'),
-  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+ GROQ_API_KEY: z.string().min(1, 'is required'),
+  GROQ_MODEL: z
+  .string()
+  .default('openai/gpt-oss-20b'),
+
+  // Gemini - Fallback AI provider
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z
+    .string()
+    .default('gemini-2.5-flash'),
 
 
   FRONTEND_URL: z.string().default('http://localhost:5173'),
