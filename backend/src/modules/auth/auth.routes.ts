@@ -26,7 +26,7 @@ const COOKIE = 'refresh_token';
 const cookieOpts = {
   httpOnly: true,
   secure: env.NODE_ENV === 'production',
-  sameSite: 'strict' as const,
+  sameSite: env.NODE_ENV === 'production' ? 'none' as const : 'strict' as const,
   path: '/api/v1/auth',
   maxAge: 30 * 864e5,
 };
